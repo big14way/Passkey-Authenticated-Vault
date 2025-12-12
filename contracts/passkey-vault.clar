@@ -13,11 +13,17 @@
 (define-constant ERR_VAULT_EXISTS (err u106))
 (define-constant ERR_ZERO_AMOUNT (err u107))
 (define-constant ERR_INVALID_PUBLIC_KEY (err u108))
+(define-constant ERR_INVALID_WITHDRAWAL_LIMIT (err u109))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
 ;; Maximum time-lock period (in seconds) - 365 days
 (define-constant MAX_TIME_LOCK u31536000)
+
+;; Minimum withdrawal limit (in microSTX) - 1 STX
+(define-constant MIN_WITHDRAWAL_LIMIT u1000000)
+;; Maximum withdrawal limit (in microSTX) - 1,000,000 STX
+(define-constant MAX_WITHDRAWAL_LIMIT u1000000000000)
 
 ;; Data Variables
 (define-data-var total-vaults uint u0)
@@ -216,6 +222,9 @@
                   (and (>= time-lock-duration MIN_TIME_LOCK)
                        (<= time-lock-duration MAX_TIME_LOCK)))
               ERR_INVALID_TIME_LOCK)
+    (asserts! (and (>= withdrawal-limit MIN_WITHDRAWAL_LIMIT)
+                   (<= withdrawal-limit MAX_WITHDRAWAL_LIMIT))
+              ERR_INVALID_WITHDRAWAL_LIMIT)
     
     ;; Create vault
     (map-set vaults 
@@ -243,7 +252,8 @@
     
     ;; Update global counter
     (var-set total-vaults vault-id)
-    
+
+    (print {event: "vault-created", vault-id: vault-id, owner: tx-sender, time-lock: time-lock-duration})
     (ok vault-id)
   )
 )
@@ -273,7 +283,8 @@
     
     ;; Update total deposits
     (var-set total-deposits (+ (var-get total-deposits) amount))
-    
+
+    (print {event: "deposit", vault-id: vault-id, amount: amount, new-balance: (+ (get stx-balance vault) amount)})
     (ok true)
   )
 )
@@ -328,7 +339,8 @@
     
     ;; Transfer STX to owner
     (try! (as-contract (stx-transfer? amount tx-sender (get owner vault))))
-    
+
+    (print {event: "withdrawal", vault-id: vault-id, amount: amount, nonce: current-nonce, remaining-balance: (- (get stx-balance vault) amount)})
     (ok true)
   )
 )
@@ -344,14 +356,15 @@
     (asserts! (and (>= duration MIN_TIME_LOCK) (<= duration MAX_TIME_LOCK)) ERR_INVALID_TIME_LOCK)
     
     ;; Update time-lock
-    (map-set vaults 
+    (map-set vaults
       { vault-id: vault-id }
       (merge vault {
         time-lock-until: (+ current-time duration),
         last-activity: current-time
       })
     )
-    
+
+    (print {event: "time-lock-set", vault-id: vault-id, duration: duration, locked-until: (+ current-time duration)})
     (ok true)
   )
 )
@@ -392,6 +405,7 @@
       })
     )
 
+    (print {event: "passkey-updated", vault-id: vault-id, nonce: current-nonce})
     (ok true)
   )
 )
@@ -407,19 +421,20 @@
     (asserts! (>= recovery-delay u604800) ERR_INVALID_TIME_LOCK) ;; Minimum 7 days
     
     ;; Set recovery contact
-    (map-set recovery-contacts 
+    (map-set recovery-contacts
       { vault-id: vault-id }
       {
         contact: contact,
         can-recover-after: (+ current-time recovery-delay)
       }
     )
-    
+
+    (print {event: "recovery-contact-set", vault-id: vault-id, contact: contact, can-recover-after: (+ current-time recovery-delay)})
     (ok true)
   )
 )
 
-;; Update withdrawal limit
+;; Update withdrawal limit with validation
 (define-public (update-withdrawal-limit (vault-id uint) (new-limit uint))
   (let (
       (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
@@ -427,16 +442,20 @@
     )
     ;; Validations
     (asserts! (is-eq (get owner vault) tx-sender) ERR_NOT_AUTHORIZED)
-    
+    (asserts! (and (>= new-limit MIN_WITHDRAWAL_LIMIT)
+                   (<= new-limit MAX_WITHDRAWAL_LIMIT))
+              ERR_INVALID_WITHDRAWAL_LIMIT)
+
     ;; Update limit
-    (map-set vaults 
+    (map-set vaults
       { vault-id: vault-id }
       (merge vault {
         withdrawal-limit: new-limit,
         last-activity: current-time
       })
     )
-    
+
+    (print {event: "withdrawal-limit-updated", vault-id: vault-id, new-limit: new-limit})
     (ok true)
   )
 )
@@ -468,6 +487,7 @@
           ;; Transfer to vault owner only
           (try! (as-contract (stx-transfer? balance tx-sender (get owner vault))))
           (var-set total-deposits (- (var-get total-deposits) balance))
+          (print {event: "emergency-recovery", vault-id: vault-id, amount: balance, recovered-by: tx-sender, owner: (get owner vault)})
         )
         false
       )
@@ -482,6 +502,7 @@
   (begin
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
     (var-set emergency-shutdown (not (var-get emergency-shutdown)))
+    (print {event: "emergency-shutdown-toggle", active: (var-get emergency-shutdown), by: tx-sender})
     (ok (var-get emergency-shutdown))
   )
 )
