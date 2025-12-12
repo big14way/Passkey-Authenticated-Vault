@@ -1,0 +1,15 @@
+[project]
+name = "passkey-vault"
+description = "Passkey-Authenticated Vault using Clarity 4 features (secp256r1-verify, stacks-block-time)"
+authors = ["Stacks Builder Challenge"]
+telemetry = false
+cache_dir = "./.cache"
+
+[contracts.passkey-vault]
+path = "contracts/passkey-vault.clar"
+clarity_version = 4
+epoch = 3.0
+
+[repl.analysis]
+passes = ["check_checker"]
+check_checker = { trusted_sender = false, trusted_caller = false, callee_filter = false }

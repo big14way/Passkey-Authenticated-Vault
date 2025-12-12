@@ -1,0 +1,24 @@
+# Clarinet
+.cache/
+settings/Mainnet.toml
+settings/Testnet.toml
+
+# Node
+node_modules/
+package-lock.json
+*.log
+
+# System
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Build
+dist/
+build/
