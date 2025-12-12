@@ -1,5 +1,6 @@
 ;; Passkey-Authenticated Vault
-;; Uses Clarity 4 features: secp256r1-verify, stacks-block-time
+;; Uses Clarity 4 (Epoch 3.3) - Activated November 11, 2025
+;; Features: secp256r1-verify for WebAuthn passkeys, stacks-block-time
 ;; Secure sBTC/STX savings with biometric/passkey withdrawals and time-locks
 
 ;; Constants
@@ -157,7 +158,7 @@
   )
 )
 
-;; Verify passkey signature using secp256r1-verify (Clarity 4)
+;; Verify passkey signature using secp256r1-verify (Clarity 4, Epoch 3.3)
 (define-private (verify-passkey-signature
     (message-hash (buff 32))
     (signature (buff 64))
@@ -270,7 +271,7 @@
     (asserts! (not (var-get emergency-shutdown)) ERR_NOT_AUTHORIZED)
     
     ;; Transfer STX to contract
-    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (try! (stx-transfer? amount tx-sender (unwrap-panic (as-contract? ((with-stx u0)) tx-sender))))
     
     ;; Update vault balance
     (map-set vaults 
@@ -338,7 +339,9 @@
     (var-set total-deposits (- (var-get total-deposits) amount))
     
     ;; Transfer STX to owner
-    (try! (as-contract (stx-transfer? amount tx-sender (get owner vault))))
+    (try! (as-contract? ((with-stx amount))
+      (unwrap-panic (stx-transfer? amount tx-sender (get owner vault)))
+    ))
 
     (print {event: "withdrawal", vault-id: vault-id, amount: amount, nonce: current-nonce, remaining-balance: (- (get stx-balance vault) amount)})
     (ok true)
@@ -485,11 +488,14 @@
             })
           )
           ;; Transfer to vault owner only
-          (try! (as-contract (stx-transfer? balance tx-sender (get owner vault))))
+          (try! (as-contract? ((with-stx balance))
+            (unwrap-panic (stx-transfer? balance tx-sender (get owner vault)))
+          ))
           (var-set total-deposits (- (var-get total-deposits) balance))
           (print {event: "emergency-recovery", vault-id: vault-id, amount: balance, recovered-by: tx-sender, owner: (get owner vault)})
+          true
         )
-        false
+        true
       )
     )
 

@@ -1,6 +1,6 @@
 [project]
 name = "passkey-vault"
-description = "Passkey-Authenticated Vault using Clarity 4 features (secp256r1-verify, stacks-block-time)"
+description = "Passkey-Authenticated Vault using Clarity 4 (Epoch 3.3) with secp256r1-verify for WebAuthn passkey support"
 authors = ["Stacks Builder Challenge"]
 telemetry = false
 cache_dir = "./.cache"
@@ -8,7 +8,7 @@ cache_dir = "./.cache"
 [contracts.passkey-vault]
 path = "contracts/passkey-vault.clar"
 clarity_version = 4
-epoch = 3.0
+epoch = "3.3"
 
 [repl.analysis]
 passes = ["check_checker"]

@@ -2,6 +2,41 @@
 
 All notable changes to the Passkey-Authenticated Vault project.
 
+## [1.2.0] - 2025-12-12
+
+### Clarity 4 Upgrade
+
+#### Upgraded
+- **Clarity Version**: Upgraded from Clarity 3 to **Clarity 4** (Epoch 3.3)
+- **as-contract Migration**: Migrated all `as-contract` calls to `as-contract?` with proper STX allowances
+  - Updated deposit function to use `as-contract?` with zero allowance
+  - Updated withdrawal function with explicit STX transfer allowance
+  - Updated emergency recovery with balance-based allowance
+- **Test Framework**: Migrated from Deno-based tests to modern **vitest** framework
+- **npm Package**: Added package.json, vitest.config.ts, and tsconfig.json for modern testing
+
+#### Deployed
+- **Testnet Deployment**: Successfully deployed to Stacks Testnet
+  - Contract: `ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.passkey-vault`
+  - Transaction: `beee957e06ef10f0daf8aaff83b2cc3f0515c8120df4b810c4fa7c7ce94710ab`
+  - Deployment Cost: 0.163880 STX
+  - Network: Stacks Testnet (Clarity 4, Epoch 3.3)
+
+#### Enhanced
+- **Withdrawal Limit Validation**: Added constants for min (1 STX) and max (1M STX) withdrawal limits
+- **Event Logging**: Enhanced print statements for all major contract operations
+- **Emergency Shutdown**: Improved to block all operations including deposits
+
+#### Testing
+- **10 vitest test cases** - All passing on Clarity 4
+- Test suite covers:
+  - Vault creation with validation
+  - Deposits (owner-only)
+  - Public key format validation
+  - Emergency shutdown behavior
+  - Time-lock functionality
+  - Nonce tracking
+
 ## [1.1.0] - 2025-12-12
 
 ### Critical Security Fixes

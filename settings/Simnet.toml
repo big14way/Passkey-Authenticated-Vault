@@ -1,5 +1,5 @@
 [network]
-name = "devnet"
+name = "simnet"
 
 [accounts.deployer]
 mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
@@ -16,17 +16,3 @@ balance = 100_000_000_000_000
 [accounts.wallet_3]
 mnemonic = "board list obtain sugar hour worth raven scout denial thunder horse logic fury scorpion fold genuine phrase wealth news aim below celery when cabin"
 balance = 100_000_000_000_000
-
-[devnet]
-# Set epoch boundaries to enable Clarity 4 (Epoch 3.3)
-epoch_2_0 = 100
-epoch_2_05 = 100
-epoch_2_1 = 101
-epoch_2_2 = 102
-epoch_2_3 = 103
-epoch_2_4 = 104
-epoch_2_5 = 108
-epoch_3_0 = 142
-epoch_3_1 = 144
-epoch_3_2 = 146
-epoch_3_3 = 148

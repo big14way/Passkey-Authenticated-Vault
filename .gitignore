@@ -1,24 +1,136 @@
 # Clarinet
 .cache/
+costs-reports.json
+coverage.lcov
+
+# Sensitive network configs (keep Devnet/Simnet, ignore Testnet/Mainnet with private keys)
 settings/Mainnet.toml
-settings/Testnet.toml
+# settings/Testnet.toml  # Commented out - keeping for testnet deployment
 
-# Node
+# Node.js
 node_modules/
-package-lock.json
-*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
 
-# System
+# Package lock files (keep package-lock.json for reproducibility)
+# Uncomment if using yarn
+# yarn.lock
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+.nyc_output/
+
+# Testing
+coverage/
+.vitest/
+*.lcov
+
+# Logs
+*.log
+logs/
+deployment.log
+
+# OS
 .DS_Store
-*.swp
-*.swo
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 *~
 
 # IDE
 .vscode/
 .idea/
 *.sublime-*
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.tmproj
+*.sw[mnpcod]
+*.swp
+*.swo
 
-# Build
-dist/
-build/
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Microbundle cache
+.rpt2_cache/
+.rts2_cache_cjs/
+.rts2_cache_es/
+.rts2_cache_umd/
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# parcel-bundler cache
+.cache
+.parcel-cache
+
+# Next.js
+.next
+out
+
+# Nuxt.js
+.nuxt
+dist
+
+# Gatsby
+.cache/
+public
+
+# Serverless
+.serverless/
+
+# FuseBox
+.fusebox/
+
+# DynamoDB Local
+.dynamodb/
+
+# TernJS
+.tern-port
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test
+
+# Temporary folders
+.tmp/

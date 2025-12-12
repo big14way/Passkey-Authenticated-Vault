@@ -18,19 +18,28 @@ A secure STX savings vault with biometric/passkey authentication using Clarity 4
 - ✅ **Owner-Only Deposits**: Only vault owners can deposit to their vaults
 - 🔒 **Public Key Validation**: Strict secp256r1 compressed key format validation
 
+## 🚀 Live on Testnet!
+
+**Contract Address**: `ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.passkey-vault`
+**Transaction**: [beee957e06ef10f0daf8aaff83b2cc3f0515c8120df4b810c4fa7c7ce94710ab](https://explorer.hiro.so/txid/beee957e06ef10f0daf8aaff83b2cc3f0515c8120df4b810c4fa7c7ce94710ab?chain=testnet)
+**Explorer**: [View Contract](https://explorer.hiro.so/txid/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.passkey-vault?chain=testnet)
+
 ## Recent Security Fixes
 
 ### Critical Fixes (v1.1.0)
-- ✅ Fixed Clarity version configuration (3 → 4)
+- ✅ Upgraded to **Clarity 4** with `as-contract?` migration
 - ✅ Emergency recovery now only transfers to vault owner (prevents fund theft)
 - ✅ Added nonce to update-passkey for replay protection
 - ✅ Validated public key format (33 bytes, starts with 0x02 or 0x03)
 - ✅ Restricted deposits to vault owner only
+- ✅ Added withdrawal limit validation (1 STX - 1M STX)
+- ✅ Enhanced emergency shutdown blocking all operations
+- ✅ Event logging with print statements
 
 ### Test Coverage
-- 27 comprehensive test cases
-- Real secp256r1 signature verification tests
-- Edge case and security validation
+- 10 comprehensive vitest test cases
+- All tests passing on Clarity 4
+- Security and edge case validation
 
 ## Contract Functions
 
@@ -74,22 +83,83 @@ clarinet check
 ### Running Tests
 
 ```bash
-# Run all tests (basic tests)
-clarinet test
+# Install dependencies
+npm install
 
-# Generate new test keys with real secp256r1 signatures
-node scripts/generate-test-keys.js
+# Run all tests with vitest
+npm test
 
-# Run tests with real signatures (if Deno is available)
-deno test --allow-all tests/passkey-vault-real-signatures_test.ts
+# Run with coverage
+npm run test:report
 ```
 
 ### Deploy to Testnet
 
 ```bash
-clarinet deployments generate --testnet
-clarinet deployments apply -p deployments/default.testnet-plan.yaml
+# Generate deployment plan
+clarinet deployments generate --testnet --medium-cost
+
+# Apply deployment
+clarinet deployments apply --testnet --no-dashboard
 ```
+
+## Testing on Testnet
+
+### 1. Check Contract Deployment
+
+```bash
+# View contract on explorer
+open "https://explorer.hiro.so/txid/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.passkey-vault?chain=testnet"
+
+# Or check via API
+curl "https://api.testnet.hiro.so/v2/contracts/interface/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM/passkey-vault"
+```
+
+### 2. Create a Test Vault
+
+Using Stacks CLI or Hiro Platform:
+
+```bash
+# Using stacks-cli
+stacks-cli call ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM passkey-vault create-vault \
+  -t \
+  --arg passkey-public-key:0x02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --arg time-lock-duration:0 \
+  --arg withdrawal-limit:1000000000
+```
+
+Or via the [Hiro Platform Sandbox](https://platform.hiro.so/sandbox/contract-call?chain=testnet):
+- Contract: `ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.passkey-vault`
+- Function: `create-vault`
+- Parameters:
+  - `passkey-public-key`: (buff 33 bytes) - Your compressed secp256r1 public key
+  - `time-lock-duration`: (uint) - 0 for no lock, or seconds for lock
+  - `withdrawal-limit`: (uint) - Daily limit in microSTX
+
+### 3. Read Vault Data
+
+```bash
+# Get vault by ID
+curl -X POST "https://api.testnet.hiro.so/v2/contracts/call-read/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM/passkey-vault/get-vault" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sender": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM",
+    "arguments": ["0x0100000000000000000000000000000001"]
+  }'
+
+# Get protocol stats
+curl -X POST "https://api.testnet.hiro.so/v2/contracts/call-read/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM/passkey-vault/get-protocol-stats" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sender": "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM",
+    "arguments": []
+  }'
+```
+
+### 4. Monitor Contract Activity
+
+- **Explorer**: https://explorer.hiro.so/txid/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.passkey-vault?chain=testnet
+- **API Transactions**: https://api.testnet.hiro.so/extended/v1/address/ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM/transactions
 
 ## Usage Example
 
