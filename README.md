@@ -453,6 +453,73 @@ clarinet coverage
 - [secp256r1 (P-256) Curve](https://neuromancer.sk/std/secg/secp256r1)
 - [Stacks Documentation](https://docs.stacks.co/)
 
+## Hiro Chainhooks Integration
+
+This project includes a **Hiro Chainhooks** implementation for real-time monitoring of vault activity, passkey authentication events, and security metrics.
+
+### Features
+
+✅ **Real-time Vault Tracking**: Monitor vault creation, deposits, withdrawals, and balance changes
+✅ **User Analytics**: Track vault adoption, user engagement, and authentication patterns
+✅ **Security Monitoring**: Detect emergency recoveries, passkey updates, and withdrawal limit changes
+✅ **Balance Metrics**: Monitor total deposits, vault count, and average vault size
+✅ **Reorg-Resistant**: Chainhook's built-in protection against blockchain reorganizations
+
+### Tracked Events
+
+| Event | Contract Function | Data Collected |
+|-------|------------------|----------------|
+| Vault Created | `create-vault` | Owner, passkey public key, time-lock, limits |
+| STX Deposited | `deposit-stx` | Vault ID, amount, new balance |
+| Withdrawal | `withdraw-with-passkey` | Vault ID, amount, signature verification |
+| Passkey Updated | `update-passkey` | Vault ID, new public key, nonce |
+| Time-Lock Set | `set-time-lock` | Vault ID, duration, unlock time |
+| Withdrawal Limit Updated | `update-withdrawal-limit` | Vault ID, new limit |
+| Recovery Contact Set | `set-recovery-contact` | Vault ID, contact address |
+| Emergency Recovery | `emergency-recovery` | Vault ID, recovery contact, amount |
+
+### Analytics Output
+
+The Chainhooks observer generates real-time analytics:
+
+```json
+{
+  "totalVaults": 89,
+  "uniqueOwners": 82,
+  "totalDeposits": 12500000000,
+  "totalWithdrawals": 3200000000,
+  "activeVaults": 76,
+  "lockedVaults": 13,
+  "emergencyRecoveries": 2,
+  "passkeyUpdates": 15,
+  "averageVaultSize": 140449438,
+  "vaults": [...],
+  "withdrawals": [...],
+  "timestamp": "2025-12-16T10:30:00.000Z"
+}
+```
+
+### Quick Start
+
+```bash
+cd chainhooks
+npm install
+cp .env.example .env
+# Edit .env with your configuration
+npm start
+```
+
+For detailed setup and configuration, see [chainhooks/README.md](./chainhooks/README.md).
+
+### Use Cases
+
+- **Vault Dashboard**: Real-time overview of all vaults, balances, and security settings
+- **Security Analytics**: Monitor suspicious activity, recovery attempts, and authentication patterns
+- **User Engagement Metrics**: Track vault adoption, deposit frequency, and retention
+- **Compliance Monitoring**: Audit trail of all vault operations for regulatory compliance
+- **Risk Management**: Monitor large withdrawals, vault health, and time-lock usage
+- **Customer Support**: Quick access to vault history for troubleshooting user issues
+
 ## License
 
 MIT License - see LICENSE file for details
