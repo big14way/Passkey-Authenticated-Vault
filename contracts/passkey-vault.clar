@@ -269,24 +269,52 @@
     (asserts! (is-eq (get owner vault) tx-sender) ERR_NOT_AUTHORIZED)
     (asserts! (> amount u0) ERR_ZERO_AMOUNT)
     (asserts! (not (var-get emergency-shutdown)) ERR_NOT_AUTHORIZED)
-    
+
     ;; Transfer STX to contract
     (try! (stx-transfer? amount tx-sender (unwrap-panic (as-contract? ((with-stx u0)) tx-sender))))
-    
+
     ;; Update vault balance
-    (map-set vaults 
+    (map-set vaults
       { vault-id: vault-id }
       (merge vault {
         stx-balance: (+ (get stx-balance vault) amount),
         last-activity: current-time
       })
     )
-    
+
     ;; Update total deposits
     (var-set total-deposits (+ (var-get total-deposits) amount))
 
     (print {event: "deposit", vault-id: vault-id, amount: amount, new-balance: (+ (get stx-balance vault) amount)})
     (ok true)
+  )
+)
+
+;; Batch deposit - deposit into multiple vaults in one transaction
+(define-public (batch-deposit (deposits (list 10 {vault-id: uint, amount: uint})))
+  (let (
+      (total-amount (fold + (map get-deposit-amount deposits) u0))
+    )
+    ;; Validate emergency shutdown
+    (asserts! (not (var-get emergency-shutdown)) ERR_NOT_AUTHORIZED)
+
+    ;; Process all deposits
+    (fold process-single-deposit deposits (ok true))
+  )
+)
+
+;; Helper function to extract amount from deposit tuple
+(define-private (get-deposit-amount (deposit {vault-id: uint, amount: uint}))
+  (get amount deposit)
+)
+
+;; Helper function to process a single deposit in batch
+(define-private (process-single-deposit
+    (deposit {vault-id: uint, amount: uint})
+    (previous-result (response bool uint)))
+  (match previous-result
+    success (deposit-stx (get vault-id deposit) (get amount deposit))
+    error (err error)
   )
 )
 
