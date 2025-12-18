@@ -145,6 +145,63 @@
   )
 )
 
+;; Get comprehensive vault analytics
+(define-read-only (get-vault-analytics (vault-id uint))
+  (match (get-vault vault-id)
+    vault
+      (let ((current-time (unwrap-panic (get-block-timestamp)))
+            (time-locked (> (get time-lock-until vault) current-time))
+            (days-since-creation (/ (- current-time (get created-at vault)) u86400))
+            (days-since-activity (/ (- current-time (get last-activity vault)) u86400)))
+        (ok {
+          vault-id: vault-id,
+          stx-balance: (get stx-balance vault),
+          is-time-locked: time-locked,
+          time-lock-remaining: (if time-locked (- (get time-lock-until vault) current-time) u0),
+          withdrawal-limit: (get withdrawal-limit vault),
+          daily-withdrawn: (get daily-withdrawn vault),
+          daily-available: (unwrap-panic (get-daily-withdrawal-available vault-id)),
+          days-since-creation: days-since-creation,
+          days-since-activity: days-since-activity,
+          current-nonce: (get-nonce vault-id)
+        })
+      )
+    (err ERR_VAULT_NOT_FOUND)
+  )
+)
+
+;; Get vault health score (0-100)
+(define-read-only (get-vault-health-score (vault-id uint))
+  (match (get-vault vault-id)
+    vault
+      (let (
+          (current-time (unwrap-panic (get-block-timestamp)))
+          (has-balance (if (> (get stx-balance vault) u0) u25 u0))
+          (has-time-lock (if (> (get time-lock-until vault) current-time) u25 u0))
+          (has-withdrawal-limit (if (<= (get withdrawal-limit vault) u100000000) u25 u0))
+          (recent-activity (if (< (- current-time (get last-activity vault)) u2592000) u25 u0)) ;; Active in last 30 days
+        )
+        (ok (+ (+ has-balance has-time-lock) (+ has-withdrawal-limit recent-activity)))
+      )
+    (err ERR_VAULT_NOT_FOUND)
+  )
+)
+
+;; Get total value locked in contract
+(define-read-only (get-total-value-locked)
+  (ok (var-get total-deposits))
+)
+
+;; Check if vault has recovery contact set
+(define-read-only (has-recovery-contact (vault-id uint))
+  (is-some (map-get? recovery-contacts { vault-id: vault-id }))
+)
+
+;; Get recovery contact info
+(define-read-only (get-recovery-contact-info (vault-id uint))
+  (map-get? recovery-contacts { vault-id: vault-id })
+)
+
 ;; Private functions
 
 ;; Validate compressed secp256r1 public key format
