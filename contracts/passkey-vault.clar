@@ -17,6 +17,7 @@
 (define-constant ERR_INVALID_WITHDRAWAL_LIMIT (err u109))
 (define-constant ERR_RECOVERY_NOT_READY (err u110))
 (define-constant ERR_NOT_RECOVERY_CONTACT (err u111))
+(define-constant ERR_BATCH_LIMIT_EXCEEDED (err u112))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
