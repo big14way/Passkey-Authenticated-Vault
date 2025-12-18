@@ -18,6 +18,9 @@
 (define-constant ERR_RECOVERY_NOT_READY (err u110))
 (define-constant ERR_NOT_RECOVERY_CONTACT (err u111))
 (define-constant ERR_BATCH_LIMIT_EXCEEDED (err u112))
+(define-constant ERR_VAULT_LOCKED (err u113))
+(define-constant ERR_TOO_MANY_FAILED_ATTEMPTS (err u114))
+(define-constant ERR_INVALID_AMOUNT (err u115))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -36,6 +39,8 @@
 (define-data-var inactivity-threshold uint u7776000)
 (define-data-var max-daily-transactions uint u10)
 (define-data-var total-withdrawals uint u0)
+(define-data-var max-failed-attempts uint u5)
+(define-data-var auto-lock-duration uint u86400)
 
 ;; Data Maps
 
@@ -51,7 +56,9 @@
     last-activity: uint,
     withdrawal-limit: uint,         ;; Daily withdrawal limit
     daily-withdrawn: uint,
-    daily-reset-time: uint
+    daily-reset-time: uint,
+    auto-locked-until: uint,        ;; Auto-lock timestamp
+    failed-attempts: uint           ;; Failed withdrawal attempts counter
   }
 )
 
@@ -199,6 +206,41 @@
   )
 )
 
+;; Check if vault is auto-locked
+(define-read-only (is-vault-auto-locked (vault-id uint))
+  (match (get-vault vault-id)
+    vault
+      (let ((current-time (unwrap-panic (get-block-timestamp))))
+        (> (get auto-locked-until vault) current-time))
+    false
+  )
+)
+
+;; Get failed attempts count
+(define-read-only (get-failed-attempts (vault-id uint))
+  (match (get-vault vault-id)
+    vault (ok (get failed-attempts vault))
+    (err ERR_VAULT_NOT_FOUND)
+  )
+)
+
+;; Get auto-lock status and time remaining
+(define-read-only (get-auto-lock-status (vault-id uint))
+  (match (get-vault vault-id)
+    vault
+      (let ((current-time (unwrap-panic (get-block-timestamp)))
+            (locked-until (get auto-locked-until vault)))
+        (ok {
+          is-locked: (> locked-until current-time),
+          locked-until: locked-until,
+          time-remaining: (if (> locked-until current-time) (- locked-until current-time) u0),
+          failed-attempts: (get failed-attempts vault)
+        })
+      )
+    (err ERR_VAULT_NOT_FOUND)
+  )
+)
+
 ;; Get vault health score (0-100)
 (define-read-only (get-vault-health-score (vault-id uint))
   (match (get-vault vault-id)
@@ -314,20 +356,22 @@
               ERR_INVALID_WITHDRAWAL_LIMIT)
     
     ;; Create vault
-    (map-set vaults 
+    (map-set vaults
       { vault-id: vault-id }
       {
         owner: tx-sender,
         passkey-public-key: passkey-public-key,
         stx-balance: u0,
-        time-lock-until: (if (> time-lock-duration u0) 
-                           (+ current-time time-lock-duration) 
+        time-lock-until: (if (> time-lock-duration u0)
+                           (+ current-time time-lock-duration)
                            u0),
         created-at: current-time,
         last-activity: current-time,
         withdrawal-limit: withdrawal-limit,
         daily-withdrawn: u0,
-        daily-reset-time: (+ current-time u86400)
+        daily-reset-time: (+ current-time u86400),
+        auto-locked-until: u0,
+        failed-attempts: u0
       }
     )
     
@@ -405,7 +449,7 @@
 )
 
 ;; Withdraw STX with passkey authentication
-(define-public (withdraw-with-passkey 
+(define-public (withdraw-with-passkey
     (vault-id uint)
     (amount uint)
     (signature (buff 64)))
@@ -421,13 +465,37 @@
     (asserts! (<= amount (get stx-balance vault)) ERR_INSUFFICIENT_BALANCE)
     (asserts! (<= (get time-lock-until vault) current-time) ERR_TIME_LOCK_ACTIVE)
     (asserts! (not (var-get emergency-shutdown)) ERR_NOT_AUTHORIZED)
-    
-    ;; Verify passkey signature using Clarity 4 secp256r1-verify
-    (asserts! (verify-passkey-signature 
-                message-hash 
-                signature 
-                (get passkey-public-key vault)) 
-              ERR_INVALID_SIGNATURE)
+
+    ;; Check auto-lock status
+    (asserts! (<= (get auto-locked-until vault) current-time) ERR_VAULT_LOCKED)
+
+    ;; Verify passkey signature - handle failed attempts
+    (let ((signature-valid (verify-passkey-signature message-hash signature (get passkey-public-key vault))))
+      (if signature-valid
+        ;; Signature valid - reset failed attempts
+        (map-set vaults
+          { vault-id: vault-id }
+          (merge vault { failed-attempts: u0 }))
+        ;; Signature invalid - increment failed attempts and potentially lock
+        (let ((new-failed-count (+ (get failed-attempts vault) u1)))
+          (begin
+            (map-set vaults
+              { vault-id: vault-id }
+              (merge vault {
+                failed-attempts: new-failed-count,
+                auto-locked-until: (if (>= new-failed-count (var-get max-failed-attempts))
+                                    (+ current-time (var-get auto-lock-duration))
+                                    (get auto-locked-until vault))
+              }))
+            (if (>= new-failed-count (var-get max-failed-attempts))
+              (begin
+                (print {event: "vault-auto-locked", vault-id: vault-id, failed-attempts: new-failed-count, locked-until: (+ current-time (var-get auto-lock-duration))})
+                true)
+              (begin
+                (print {event: "failed-withdrawal-attempt", vault-id: vault-id, failed-attempts: new-failed-count})
+                true)))))
+      ;; Assert signature is valid after handling attempts
+      (asserts! signature-valid ERR_INVALID_SIGNATURE))
     
     ;; Check daily limit
     (let ((available (unwrap! (get-daily-withdrawal-available vault-id) ERR_VAULT_NOT_FOUND)))
@@ -624,5 +692,65 @@
     (var-set emergency-shutdown (not (var-get emergency-shutdown)))
     (print {event: "emergency-shutdown-toggle", active: (var-get emergency-shutdown), by: tx-sender})
     (ok (var-get emergency-shutdown))
+  )
+)
+
+;; Manually unlock vault (owner only)
+(define-public (unlock-vault (vault-id uint))
+  (let (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (current-time (unwrap-panic (get-block-timestamp)))
+    )
+    ;; Validations
+    (asserts! (is-eq (get owner vault) tx-sender) ERR_NOT_AUTHORIZED)
+
+    ;; Reset auto-lock and failed attempts
+    (map-set vaults
+      { vault-id: vault-id }
+      (merge vault {
+        auto-locked-until: u0,
+        failed-attempts: u0,
+        last-activity: current-time
+      })
+    )
+
+    (print {event: "vault-manually-unlocked", vault-id: vault-id, by: tx-sender})
+    (ok true)
+  )
+)
+
+;; Admin: Configure auto-lock parameters
+(define-public (set-auto-lock-config (max-attempts uint) (lock-duration uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (> max-attempts u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= lock-duration u3600) ERR_INVALID_TIME_LOCK) ;; Minimum 1 hour
+    (asserts! (<= lock-duration u604800) ERR_INVALID_TIME_LOCK) ;; Maximum 7 days
+
+    (var-set max-failed-attempts max-attempts)
+    (var-set auto-lock-duration lock-duration)
+
+    (print {event: "auto-lock-config-updated", max-attempts: max-attempts, lock-duration: lock-duration})
+    (ok true)
+  )
+)
+
+;; Admin: Reset failed attempts for a vault (emergency use)
+(define-public (admin-reset-failed-attempts (vault-id uint))
+  (let (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+
+    (map-set vaults
+      { vault-id: vault-id }
+      (merge vault {
+        failed-attempts: u0,
+        auto-locked-until: u0
+      })
+    )
+
+    (print {event: "admin-reset-failed-attempts", vault-id: vault-id})
+    (ok true)
   )
 )
