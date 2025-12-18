@@ -15,6 +15,8 @@
 (define-constant ERR_ZERO_AMOUNT (err u107))
 (define-constant ERR_INVALID_PUBLIC_KEY (err u108))
 (define-constant ERR_INVALID_WITHDRAWAL_LIMIT (err u109))
+(define-constant ERR_RECOVERY_NOT_READY (err u110))
+(define-constant ERR_NOT_RECOVERY_CONTACT (err u111))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -167,6 +169,18 @@
         })
       )
     (err ERR_VAULT_NOT_FOUND)
+  )
+)
+
+;; Check if recovery is possible for a vault
+(define-read-only (can-recover (vault-id uint) (caller principal))
+  (match (map-get? recovery-contacts { vault-id: vault-id })
+    recovery-data
+      (and
+        (is-eq caller (get contact recovery-data))
+        (>= (unwrap-panic (get-block-timestamp)) (get can-recover-after recovery-data))
+      )
+    false
   )
 )
 
