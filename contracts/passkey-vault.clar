@@ -35,6 +35,7 @@
 (define-data-var emergency-shutdown bool false)
 (define-data-var inactivity-threshold uint u7776000)
 (define-data-var max-daily-transactions uint u10)
+(define-data-var total-withdrawals uint u0)
 
 ;; Data Maps
 
