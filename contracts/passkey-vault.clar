@@ -32,6 +32,7 @@
 (define-data-var total-vaults uint u0)
 (define-data-var total-deposits uint u0)
 (define-data-var emergency-shutdown bool false)
+(define-data-var inactivity-threshold uint u7776000)
 
 ;; Data Maps
 
@@ -180,6 +181,17 @@
         (is-eq caller (get contact recovery-data))
         (>= (unwrap-panic (get-block-timestamp)) (get can-recover-after recovery-data))
       )
+    false
+  )
+)
+
+;; Check if vault is inactive
+(define-read-only (is-vault-inactive (vault-id uint))
+  (match (get-vault vault-id)
+    vault
+      (let ((current-time (unwrap-panic (get-block-timestamp)))
+            (threshold (var-get inactivity-threshold)))
+        (> (- current-time (get last-activity vault)) threshold))
     false
   )
 )
