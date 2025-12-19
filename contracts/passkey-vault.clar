@@ -21,6 +21,7 @@
 (define-constant ERR_VAULT_LOCKED (err u113))
 (define-constant ERR_TOO_MANY_FAILED_ATTEMPTS (err u114))
 (define-constant ERR_INVALID_AMOUNT (err u115))
+(define-constant ERR_EMERGENCY_CONTACT_EXISTS (err u116))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -66,6 +67,11 @@
 (define-map owner-vault
   { owner: principal }
   { vault-id: uint }
+)
+
+(define-map emergency-contacts
+  { vault-id: uint }
+  { contact: principal, set-at: uint, can-withdraw-after: uint }
 )
 
 ;; Nonce tracking for replay protection
@@ -734,6 +740,30 @@
     (ok true)
   )
 )
+
+(define-public (set-emergency-contact (vault-id uint) (contact principal) (wait-period uint))
+  (let ((vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND)))
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (map-get? emergency-contacts { vault-id: vault-id })) ERR_EMERGENCY_CONTACT_EXISTS)
+    (asserts! (>= wait-period u86400) ERR_INVALID_AMOUNT)
+    (map-set emergency-contacts { vault-id: vault-id } {
+      contact: contact,
+      set-at: stacks-block-time,
+      can-withdraw-after: (+ stacks-block-time wait-period)
+    })
+    (print {event: "emergency-contact-set", vault-id: vault-id, contact: contact, can-withdraw-after: (+ stacks-block-time wait-period)})
+    (ok true)))
+
+(define-public (emergency-withdraw (vault-id uint) (amount uint))
+  (let ((vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+        (emergency-contact (unwrap! (map-get? emergency-contacts { vault-id: vault-id }) ERR_NOT_RECOVERY_CONTACT)))
+    (asserts! (is-eq tx-sender (get contact emergency-contact)) ERR_NOT_RECOVERY_CONTACT)
+    (asserts! (>= stacks-block-time (get can-withdraw-after emergency-contact)) ERR_TIME_LOCK_ACTIVE)
+    (asserts! (<= amount (get stx-balance vault)) ERR_INSUFFICIENT_BALANCE)
+    (try! (as-contract (stx-transfer? amount tx-sender (get contact emergency-contact))))
+    (map-set vaults { vault-id: vault-id } (merge vault { stx-balance: (- (get stx-balance vault) amount) }))
+    (print {event: "emergency-withdrawal", vault-id: vault-id, contact: tx-sender, amount: amount})
+    (ok true)))
 
 ;; Admin: Reset failed attempts for a vault (emergency use)
 (define-public (admin-reset-failed-attempts (vault-id uint))
