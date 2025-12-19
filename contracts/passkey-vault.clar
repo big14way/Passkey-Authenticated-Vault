@@ -760,7 +760,7 @@
     (asserts! (is-eq tx-sender (get contact emergency-contact)) ERR_NOT_RECOVERY_CONTACT)
     (asserts! (>= stacks-block-time (get can-withdraw-after emergency-contact)) ERR_TIME_LOCK_ACTIVE)
     (asserts! (<= amount (get stx-balance vault)) ERR_INSUFFICIENT_BALANCE)
-    (try! (as-contract (stx-transfer? amount tx-sender (get contact emergency-contact))))
+    (try! (stx-transfer? amount (as-contract tx-sender) (get contact emergency-contact)))
     (map-set vaults { vault-id: vault-id } (merge vault { stx-balance: (- (get stx-balance vault) amount) }))
     (print {event: "emergency-withdrawal", vault-id: vault-id, contact: tx-sender, amount: amount})
     (ok true)))
