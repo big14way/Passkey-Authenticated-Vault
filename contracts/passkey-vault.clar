@@ -22,6 +22,10 @@
 (define-constant ERR_TOO_MANY_FAILED_ATTEMPTS (err u114))
 (define-constant ERR_INVALID_AMOUNT (err u115))
 (define-constant ERR_EMERGENCY_CONTACT_EXISTS (err u116))
+(define-constant ERR_SHARED_ACCESS_EXISTS (err u117))
+(define-constant ERR_SHARED_ACCESS_NOT_FOUND (err u118))
+(define-constant ERR_SHARED_ACCESS_EXPIRED (err u119))
+(define-constant ERR_SHARED_LIMIT_EXCEEDED (err u120))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -83,10 +87,29 @@
 ;; Emergency contacts for recovery
 (define-map recovery-contacts
   { vault-id: uint }
-  { 
+  {
     contact: principal,
     can-recover-after: uint  ;; Timestamp after which recovery is possible
   }
+)
+
+;; Shared vault access for temporary multi-user permissions
+(define-map shared-access
+  { vault-id: uint, user: principal }
+  {
+    granted-at: uint,
+    expires-at: uint,
+    withdrawal-limit: uint,     ;; Per-withdrawal limit for shared user
+    total-limit: uint,           ;; Total amount shared user can withdraw
+    total-withdrawn: uint,       ;; Amount withdrawn so far
+    can-deposit: bool            ;; Whether shared user can deposit
+  }
+)
+
+;; Track all users with shared access to a vault
+(define-map vault-shared-users
+  { vault-id: uint }
+  (list 10 principal)
 )
 
 ;; Read-only functions
@@ -277,6 +300,39 @@
 ;; Get recovery contact info
 (define-read-only (get-recovery-contact-info (vault-id uint))
   (map-get? recovery-contacts { vault-id: vault-id })
+)
+
+;; Get shared access info for a user
+(define-read-only (get-shared-access (vault-id uint) (user principal))
+  (map-get? shared-access { vault-id: vault-id, user: user })
+)
+
+;; Check if user has active shared access
+(define-read-only (has-active-shared-access (vault-id uint) (user principal))
+  (match (get-shared-access vault-id user)
+    access-info
+      (let ((current-time (unwrap-panic (get-block-timestamp))))
+        (and
+          (>= (get expires-at access-info) current-time)
+          (< (get total-withdrawn access-info) (get total-limit access-info))
+        )
+      )
+    false
+  )
+)
+
+;; Get all users with shared access to a vault
+(define-read-only (get-vault-shared-users (vault-id uint))
+  (default-to (list) (map-get? vault-shared-users { vault-id: vault-id }))
+)
+
+;; Get shared user's remaining limit
+(define-read-only (get-shared-access-remaining (vault-id uint) (user principal))
+  (match (get-shared-access vault-id user)
+    access-info
+      (ok (- (get total-limit access-info) (get total-withdrawn access-info)))
+    (err ERR_SHARED_ACCESS_NOT_FOUND)
+  )
 )
 
 ;; Private functions
@@ -782,6 +838,186 @@
     )
 
     (print {event: "admin-reset-failed-attempts", vault-id: vault-id})
+    (ok true)
+  )
+)
+
+;; ========================================
+;; Shared Vault Access Functions
+;; ========================================
+
+;; Grant shared access to another user
+(define-public (grant-shared-access
+    (vault-id uint)
+    (user principal)
+    (duration uint)
+    (withdrawal-limit uint)
+    (total-limit uint)
+    (can-deposit bool))
+  (let (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (current-time (unwrap-panic (get-block-timestamp)))
+      (existing-users (get-vault-shared-users vault-id))
+    )
+    ;; Validations
+    (asserts! (is-eq (get owner vault) tx-sender) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (get-shared-access vault-id user)) ERR_SHARED_ACCESS_EXISTS)
+    (asserts! (> duration u0) ERR_INVALID_TIME_LOCK)
+    (asserts! (<= duration u2592000) ERR_INVALID_TIME_LOCK) ;; Max 30 days
+    (asserts! (> withdrawal-limit u0) ERR_INVALID_WITHDRAWAL_LIMIT)
+    (asserts! (> total-limit u0) ERR_INVALID_WITHDRAWAL_LIMIT)
+    (asserts! (<= withdrawal-limit total-limit) ERR_INVALID_WITHDRAWAL_LIMIT)
+
+    ;; Create shared access
+    (map-set shared-access
+      { vault-id: vault-id, user: user }
+      {
+        granted-at: current-time,
+        expires-at: (+ current-time duration),
+        withdrawal-limit: withdrawal-limit,
+        total-limit: total-limit,
+        total-withdrawn: u0,
+        can-deposit: can-deposit
+      }
+    )
+
+    ;; Add user to shared users list
+    (map-set vault-shared-users
+      { vault-id: vault-id }
+      (unwrap! (as-max-len? (append existing-users user) u10) ERR_BATCH_LIMIT_EXCEEDED)
+    )
+
+    (print {
+      event: "shared-access-granted",
+      vault-id: vault-id,
+      user: user,
+      expires-at: (+ current-time duration),
+      withdrawal-limit: withdrawal-limit,
+      total-limit: total-limit,
+      can-deposit: can-deposit,
+      timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; Revoke shared access
+(define-public (revoke-shared-access (vault-id uint) (user principal))
+  (let (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (access-info (unwrap! (get-shared-access vault-id user) ERR_SHARED_ACCESS_NOT_FOUND))
+    )
+    ;; Validations
+    (asserts! (is-eq (get owner vault) tx-sender) ERR_NOT_AUTHORIZED)
+
+    ;; Remove shared access
+    (map-delete shared-access { vault-id: vault-id, user: user })
+
+    (print {
+      event: "shared-access-revoked",
+      vault-id: vault-id,
+      user: user,
+      total-withdrawn: (get total-withdrawn access-info),
+      timestamp: stacks-block-time
+    })
+
+    (ok true)
+  )
+)
+
+;; Shared user deposit to vault
+(define-public (shared-deposit (vault-id uint) (amount uint))
+  (let (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (access-info (unwrap! (get-shared-access vault-id tx-sender) ERR_SHARED_ACCESS_NOT_FOUND))
+      (current-time (unwrap-panic (get-block-timestamp)))
+    )
+    ;; Validations
+    (asserts! (get can-deposit access-info) ERR_NOT_AUTHORIZED)
+    (asserts! (>= (get expires-at access-info) current-time) ERR_SHARED_ACCESS_EXPIRED)
+    (asserts! (> amount u0) ERR_ZERO_AMOUNT)
+    (asserts! (not (var-get emergency-shutdown)) ERR_NOT_AUTHORIZED)
+
+    ;; Transfer STX to contract
+    (try! (stx-transfer? amount tx-sender (unwrap-panic (as-contract? ((with-stx u0)) tx-sender))))
+
+    ;; Update vault balance
+    (map-set vaults
+      { vault-id: vault-id }
+      (merge vault {
+        stx-balance: (+ (get stx-balance vault) amount),
+        last-activity: current-time
+      })
+    )
+
+    ;; Update total deposits
+    (var-set total-deposits (+ (var-get total-deposits) amount))
+
+    (print {
+      event: "shared-deposit",
+      vault-id: vault-id,
+      shared-user: tx-sender,
+      amount: amount,
+      new-balance: (+ (get stx-balance vault) amount),
+      timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; Shared user withdrawal from vault
+(define-public (shared-withdraw (vault-id uint) (amount uint))
+  (let (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (access-info (unwrap! (get-shared-access vault-id tx-sender) ERR_SHARED_ACCESS_NOT_FOUND))
+      (current-time (unwrap-panic (get-block-timestamp)))
+    )
+    ;; Validations
+    (asserts! (>= (get expires-at access-info) current-time) ERR_SHARED_ACCESS_EXPIRED)
+    (asserts! (> amount u0) ERR_ZERO_AMOUNT)
+    (asserts! (<= amount (get stx-balance vault)) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (<= amount (get withdrawal-limit access-info)) ERR_SHARED_LIMIT_EXCEEDED)
+    (asserts! (<= (+ (get total-withdrawn access-info) amount) (get total-limit access-info)) ERR_SHARED_LIMIT_EXCEEDED)
+    (asserts! (not (var-get emergency-shutdown)) ERR_NOT_AUTHORIZED)
+
+    ;; Update shared access withdrawn amount
+    (map-set shared-access
+      { vault-id: vault-id, user: tx-sender }
+      (merge access-info {
+        total-withdrawn: (+ (get total-withdrawn access-info) amount)
+      })
+    )
+
+    ;; Update vault balance
+    (map-set vaults
+      { vault-id: vault-id }
+      (merge vault {
+        stx-balance: (- (get stx-balance vault) amount),
+        last-activity: current-time
+      })
+    )
+
+    ;; Update total deposits
+    (var-set total-deposits (- (var-get total-deposits) amount))
+
+    ;; Transfer STX to shared user
+    (try! (as-contract? ((with-stx amount))
+      (unwrap-panic (stx-transfer? amount tx-sender tx-sender))
+    ))
+
+    (print {
+      event: "shared-withdrawal",
+      vault-id: vault-id,
+      shared-user: tx-sender,
+      amount: amount,
+      remaining-balance: (- (get stx-balance vault) amount),
+      total-withdrawn: (+ (get total-withdrawn access-info) amount),
+      total-limit: (get total-limit access-info),
+      timestamp: current-time
+    })
+
     (ok true)
   )
 )
