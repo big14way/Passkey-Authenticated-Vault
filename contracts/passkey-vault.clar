@@ -26,6 +26,8 @@
 (define-constant ERR_SHARED_ACCESS_NOT_FOUND (err u118))
 (define-constant ERR_SHARED_ACCESS_EXPIRED (err u119))
 (define-constant ERR_SHARED_LIMIT_EXCEEDED (err u120))
+(define-constant ERR_AUDIT_LOG_NOT_FOUND (err u121))
+(define-constant ERR_INVALID_LOG_FILTER (err u122))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -111,6 +113,59 @@
   { vault-id: uint }
   (list 10 principal)
 )
+
+;; ========================================
+;; Audit Trail Data Structures
+;; ========================================
+
+(define-data-var audit-log-counter uint u0)
+(define-data-var max-logs-per-vault uint u100)
+
+;; Activity types for audit trail
+(define-constant ACTIVITY_VAULT_CREATED u1)
+(define-constant ACTIVITY_DEPOSIT u2)
+(define-constant ACTIVITY_WITHDRAWAL u3)
+(define-constant ACTIVITY_TIME_LOCK_SET u4)
+(define-constant ACTIVITY_PASSKEY_UPDATED u5)
+(define-constant ACTIVITY_RECOVERY_CONTACT_SET u6)
+(define-constant ACTIVITY_EMERGENCY_RECOVERY u7)
+(define-constant ACTIVITY_SHARED_ACCESS_GRANTED u8)
+(define-constant ACTIVITY_SHARED_ACCESS_REVOKED u9)
+(define-constant ACTIVITY_VAULT_LOCKED u10)
+(define-constant ACTIVITY_FAILED_WITHDRAWAL u11)
+
+;; Audit log entries
+(define-map audit-logs
+  { vault-id: uint, log-id: uint }
+  {
+    activity-type: uint,
+    actor: principal,
+    amount: uint,              ;; Amount involved (0 if not applicable)
+    timestamp: uint,
+    metadata: (string-ascii 128),  ;; Additional context
+    success: bool
+  }
+)
+
+;; Track log count per vault
+(define-map vault-log-count
+  { vault-id: uint }
+  { count: uint, first-log-id: uint, last-log-id: uint }
+)
+
+;; Security alerts tracking
+(define-map security-alerts
+  { vault-id: uint, alert-id: uint }
+  {
+    alert-type: (string-ascii 64),
+    severity: uint,  ;; 1=low, 2=medium, 3=high, 4=critical
+    details: (string-ascii 128),
+    triggered-at: uint,
+    resolved: bool
+  }
+)
+
+(define-data-var alert-counter uint u0)
 
 ;; Read-only functions
 
@@ -392,6 +447,59 @@
         )
       )
     false
+  )
+)
+
+;; ========================================
+;; Audit Trail Read-Only Functions
+;; ========================================
+
+;; Get specific audit log entry
+(define-read-only (get-audit-log (vault-id uint) (log-id uint))
+  (map-get? audit-logs { vault-id: vault-id, log-id: log-id })
+)
+
+;; Get vault log statistics
+(define-read-only (get-vault-log-stats (vault-id uint))
+  (default-to
+    { count: u0, first-log-id: u0, last-log-id: u0 }
+    (map-get? vault-log-count { vault-id: vault-id })
+  )
+)
+
+;; Get security alert
+(define-read-only (get-security-alert (vault-id uint) (alert-id uint))
+  (map-get? security-alerts { vault-id: vault-id, alert-id: alert-id })
+)
+
+;; Get activity type name for readability
+(define-read-only (get-activity-name (activity-type uint))
+  (if (is-eq activity-type ACTIVITY_VAULT_CREATED) "VAULT_CREATED"
+  (if (is-eq activity-type ACTIVITY_DEPOSIT) "DEPOSIT"
+  (if (is-eq activity-type ACTIVITY_WITHDRAWAL) "WITHDRAWAL"
+  (if (is-eq activity-type ACTIVITY_TIME_LOCK_SET) "TIME_LOCK_SET"
+  (if (is-eq activity-type ACTIVITY_PASSKEY_UPDATED) "PASSKEY_UPDATED"
+  (if (is-eq activity-type ACTIVITY_RECOVERY_CONTACT_SET) "RECOVERY_CONTACT_SET"
+  (if (is-eq activity-type ACTIVITY_EMERGENCY_RECOVERY) "EMERGENCY_RECOVERY"
+  (if (is-eq activity-type ACTIVITY_SHARED_ACCESS_GRANTED) "SHARED_ACCESS_GRANTED"
+  (if (is-eq activity-type ACTIVITY_SHARED_ACCESS_REVOKED) "SHARED_ACCESS_REVOKED"
+  (if (is-eq activity-type ACTIVITY_VAULT_LOCKED) "VAULT_LOCKED"
+  (if (is-eq activity-type ACTIVITY_FAILED_WITHDRAWAL) "FAILED_WITHDRAWAL"
+  "UNKNOWN")))))))))))
+)
+
+;; Get comprehensive vault audit summary
+(define-read-only (get-vault-audit-summary (vault-id uint))
+  (let
+    (
+      (stats (get-vault-log-stats vault-id))
+    )
+    {
+      total-logs: (get count stats),
+      first-log-id: (get first-log-id stats),
+      last-log-id: (get last-log-id stats),
+      audit-enabled: true
+    }
   )
 )
 
@@ -1016,6 +1124,182 @@
       total-withdrawn: (+ (get total-withdrawn access-info) amount),
       total-limit: (get total-limit access-info),
       timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; ========================================
+;; Audit Trail Public Functions
+;; ========================================
+
+;; Log vault activity (internal helper function pattern - made public for transparency)
+(define-public (log-activity
+  (vault-id uint)
+  (activity-type uint)
+  (amount uint)
+  (metadata (string-ascii 128))
+  (success bool))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (log-id (var-get audit-log-counter))
+      (current-time (unwrap-panic (get-block-timestamp)))
+      (vault-stats (get-vault-log-stats vault-id))
+    )
+    ;; Verify vault exists
+    (asserts! (is-some (get-vault vault-id)) ERR_VAULT_NOT_FOUND)
+
+    ;; Create audit log entry
+    (map-set audit-logs
+      { vault-id: vault-id, log-id: log-id }
+      {
+        activity-type: activity-type,
+        actor: tx-sender,
+        amount: amount,
+        timestamp: current-time,
+        metadata: metadata,
+        success: success
+      }
+    )
+
+    ;; Update vault log count
+    (map-set vault-log-count
+      { vault-id: vault-id }
+      {
+        count: (+ (get count vault-stats) u1),
+        first-log-id: (if (is-eq (get count vault-stats) u0)
+                        log-id
+                        (get first-log-id vault-stats)),
+        last-log-id: log-id
+      }
+    )
+
+    ;; Increment global counter
+    (var-set audit-log-counter (+ log-id u1))
+
+    ;; Emit Chainhook event
+    (print {
+      event: "activity-logged",
+      vault-id: vault-id,
+      log-id: log-id,
+      activity-type: activity-type,
+      activity-name: (get-activity-name activity-type),
+      actor: tx-sender,
+      amount: amount,
+      metadata: metadata,
+      success: success,
+      timestamp: current-time
+    })
+
+    (ok log-id)
+  )
+)
+
+;; Create security alert
+(define-public (create-security-alert
+  (vault-id uint)
+  (alert-type (string-ascii 64))
+  (severity uint)
+  (details (string-ascii 128)))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (alert-id (var-get alert-counter))
+      (current-time (unwrap-panic (get-block-timestamp)))
+    )
+    ;; Verify vault exists
+    (asserts! (is-some (get-vault vault-id)) ERR_VAULT_NOT_FOUND)
+
+    ;; Verify severity is valid (1-4)
+    (asserts! (and (>= severity u1) (<= severity u4)) ERR_INVALID_LOG_FILTER)
+
+    ;; Only vault owner or contract owner can create alerts
+    (asserts! (or
+      (is-eq tx-sender (get owner vault))
+      (is-eq tx-sender CONTRACT_OWNER)
+    ) ERR_NOT_AUTHORIZED)
+
+    ;; Create security alert
+    (map-set security-alerts
+      { vault-id: vault-id, alert-id: alert-id }
+      {
+        alert-type: alert-type,
+        severity: severity,
+        details: details,
+        triggered-at: current-time,
+        resolved: false
+      }
+    )
+
+    ;; Increment alert counter
+    (var-set alert-counter (+ alert-id u1))
+
+    ;; Emit Chainhook event
+    (print {
+      event: "security-alert-created",
+      vault-id: vault-id,
+      alert-id: alert-id,
+      alert-type: alert-type,
+      severity: severity,
+      severity-name: (if (is-eq severity u1) "low"
+                      (if (is-eq severity u2) "medium"
+                      (if (is-eq severity u3) "high"
+                      "critical"))),
+      details: details,
+      triggered-at: current-time
+    })
+
+    (ok alert-id)
+  )
+)
+
+;; Resolve security alert
+(define-public (resolve-security-alert (vault-id uint) (alert-id uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (alert (unwrap! (get-security-alert vault-id alert-id) ERR_AUDIT_LOG_NOT_FOUND))
+    )
+    ;; Only vault owner or contract owner can resolve alerts
+    (asserts! (or
+      (is-eq tx-sender (get owner vault))
+      (is-eq tx-sender CONTRACT_OWNER)
+    ) ERR_NOT_AUTHORIZED)
+
+    ;; Mark alert as resolved
+    (map-set security-alerts
+      { vault-id: vault-id, alert-id: alert-id }
+      (merge alert { resolved: true })
+    )
+
+    ;; Emit Chainhook event
+    (print {
+      event: "security-alert-resolved",
+      vault-id: vault-id,
+      alert-id: alert-id,
+      alert-type: (get alert-type alert),
+      resolved-by: tx-sender,
+      timestamp: (unwrap-panic (get-block-timestamp))
+    })
+
+    (ok true)
+  )
+)
+
+;; Admin: Configure audit settings
+(define-public (set-audit-config (max-logs uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (> max-logs u0) ERR_INVALID_LOG_FILTER)
+
+    (var-set max-logs-per-vault max-logs)
+
+    (print {
+      event: "audit-config-updated",
+      max-logs-per-vault: max-logs,
+      timestamp: (unwrap-panic (get-block-timestamp))
     })
 
     (ok true)
