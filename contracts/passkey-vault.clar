@@ -28,6 +28,12 @@
 (define-constant ERR_SHARED_LIMIT_EXCEEDED (err u120))
 (define-constant ERR_AUDIT_LOG_NOT_FOUND (err u121))
 (define-constant ERR_INVALID_LOG_FILTER (err u122))
+(define-constant ERR_INSURANCE_EXISTS (err u123))
+(define-constant ERR_NO_INSURANCE (err u124))
+(define-constant ERR_INSUFFICIENT_COVERAGE (err u125))
+(define-constant ERR_CLAIM_ALREADY_EXISTS (err u126))
+(define-constant ERR_CLAIM_NOT_FOUND (err u127))
+(define-constant ERR_CLAIM_ALREADY_PROCESSED (err u128))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -166,6 +172,50 @@
 )
 
 (define-data-var alert-counter uint u0)
+
+;; ========================================
+;; Vault Insurance System
+;; ========================================
+
+(define-data-var insurance-counter uint u0)
+(define-data-var insurance-fund-balance uint u0)
+(define-data-var base-premium-rate uint u100) ;; Base premium: 100 basis points (1%)
+(define-data-var coverage-multiplier uint u10) ;; Coverage = 10x premium paid
+(define-data-var claim-review-period uint u86400) ;; 24 hours for claim review
+(define-data-var contract-principal principal tx-sender)
+
+;; Insurance policies for vaults
+(define-map vault-insurance
+  { vault-id: uint }
+  {
+    active: bool,
+    coverage-amount: uint,
+    premium-paid: uint,
+    start-time: uint,
+    expiry-time: uint,  ;; Policy duration (e.g., 1 year)
+    claims-count: uint,
+    total-claimed: uint
+  }
+)
+
+;; Insurance claims
+(define-map insurance-claims
+  { vault-id: uint, claim-id: uint }
+  {
+    claim-amount: uint,
+    claim-reason: (string-ascii 128),
+    claimed-at: uint,
+    processed: bool,
+    approved: bool,
+    payout-amount: uint,
+    processed-at: uint
+  }
+)
+
+(define-map vault-claim-count
+  { vault-id: uint }
+  { count: uint }
+)
 
 ;; Read-only functions
 
@@ -501,6 +551,79 @@
       audit-enabled: true
     }
   )
+)
+
+;; ========================================
+;; Insurance Read-Only Functions
+;; ========================================
+
+;; Get vault insurance policy
+(define-read-only (get-vault-insurance (vault-id uint))
+  (map-get? vault-insurance { vault-id: vault-id })
+)
+
+;; Check if insurance is active
+(define-read-only (is-insurance-active (vault-id uint))
+  (match (get-vault-insurance vault-id)
+    policy (and (get active policy) (> (get expiry-time policy) stacks-block-time))
+    false)
+)
+
+;; Calculate premium for vault coverage
+(define-read-only (calculate-premium (coverage-amount uint))
+  (let
+    (
+      (rate (var-get base-premium-rate))
+    )
+    (/ (* coverage-amount rate) u10000)
+  )
+)
+
+;; Get insurance claim
+(define-read-only (get-insurance-claim (vault-id uint) (claim-id uint))
+  (map-get? insurance-claims { vault-id: vault-id, claim-id: claim-id })
+)
+
+;; Get vault claim count
+(define-read-only (get-vault-claims-count (vault-id uint))
+  (default-to u0 (get count (map-get? vault-claim-count { vault-id: vault-id })))
+)
+
+;; Get insurance fund balance
+(define-read-only (get-insurance-fund-balance)
+  (var-get insurance-fund-balance)
+)
+
+;; Get remaining coverage
+(define-read-only (get-remaining-coverage (vault-id uint))
+  (match (get-vault-insurance vault-id)
+    policy (- (get coverage-amount policy) (get total-claimed policy))
+    u0)
+)
+
+;; Get insurance policy info
+(define-read-only (get-insurance-info (vault-id uint))
+  (match (get-vault-insurance vault-id)
+    policy {
+      active: (get active policy),
+      coverage-amount: (get coverage-amount policy),
+      remaining-coverage: (- (get coverage-amount policy) (get total-claimed policy)),
+      premium-paid: (get premium-paid policy),
+      expiry-time: (get expiry-time policy),
+      is-expired: (<= (get expiry-time policy) stacks-block-time),
+      claims-count: (get claims-count policy),
+      total-claimed: (get total-claimed policy)
+    }
+    {
+      active: false,
+      coverage-amount: u0,
+      remaining-coverage: u0,
+      premium-paid: u0,
+      expiry-time: u0,
+      is-expired: true,
+      claims-count: u0,
+      total-claimed: u0
+    })
 )
 
 ;; Public functions
@@ -1300,6 +1423,280 @@
       event: "audit-config-updated",
       max-logs-per-vault: max-logs,
       timestamp: (unwrap-panic (get-block-timestamp))
+    })
+
+    (ok true)
+  )
+)
+
+;; ========================================
+;; Insurance Public Functions
+;; ========================================
+
+;; Purchase insurance for a vault
+(define-public (purchase-insurance (vault-id uint) (coverage-amount uint) (duration uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (premium (calculate-premium coverage-amount))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (get-vault-insurance vault-id)) ERR_INSURANCE_EXISTS)
+    (asserts! (> coverage-amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= duration u2592000) ERR_INVALID_AMOUNT) ;; Min 30 days
+
+    ;; Transfer premium to insurance fund
+    (unwrap! (stx-transfer? premium tx-sender (var-get contract-principal)) ERR_INSUFFICIENT_BALANCE)
+
+    ;; Create insurance policy
+    (map-set vault-insurance
+      { vault-id: vault-id }
+      {
+        active: true,
+        coverage-amount: coverage-amount,
+        premium-paid: premium,
+        start-time: current-time,
+        expiry-time: (+ current-time duration),
+        claims-count: u0,
+        total-claimed: u0
+      }
+    )
+
+    ;; Update fund balance
+    (var-set insurance-fund-balance (+ (var-get insurance-fund-balance) premium))
+
+    ;; Log activity
+    (try! (log-activity vault-id u12 coverage-amount "insurance-purchased" true))
+
+    (print {
+      event: "insurance-purchased",
+      vault-id: vault-id,
+      coverage-amount: coverage-amount,
+      premium-paid: premium,
+      expiry-time: (+ current-time duration),
+      timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; File insurance claim
+(define-public (file-insurance-claim (vault-id uint) (claim-amount uint) (reason (string-ascii 128)))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (policy (unwrap! (get-vault-insurance vault-id) ERR_NO_INSURANCE))
+      (current-time stacks-block-time)
+      (claim-count (get-vault-claims-count vault-id))
+      (claim-id (+ claim-count u1))
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (get active policy) ERR_NO_INSURANCE)
+    (asserts! (> (get expiry-time policy) current-time) ERR_NO_INSURANCE)
+    (asserts! (> claim-amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (<= (+ (get total-claimed policy) claim-amount) (get coverage-amount policy)) ERR_INSUFFICIENT_COVERAGE)
+
+    ;; Create claim record
+    (map-set insurance-claims
+      { vault-id: vault-id, claim-id: claim-id }
+      {
+        claim-amount: claim-amount,
+        claim-reason: reason,
+        claimed-at: current-time,
+        processed: false,
+        approved: false,
+        payout-amount: u0,
+        processed-at: u0
+      }
+    )
+
+    ;; Update claim count
+    (map-set vault-claim-count
+      { vault-id: vault-id }
+      { count: claim-id }
+    )
+
+    ;; Log activity
+    (try! (log-activity vault-id u13 claim-amount reason true))
+
+    (print {
+      event: "insurance-claim-filed",
+      vault-id: vault-id,
+      claim-id: claim-id,
+      claim-amount: claim-amount,
+      reason: reason,
+      timestamp: current-time
+    })
+
+    (ok claim-id)
+  )
+)
+
+;; Process insurance claim (admin function)
+(define-public (process-claim (vault-id uint) (claim-id uint) (approved bool))
+  (let
+    (
+      (claim (unwrap! (get-insurance-claim vault-id claim-id) ERR_CLAIM_NOT_FOUND))
+      (policy (unwrap! (get-vault-insurance vault-id) ERR_NO_INSURANCE))
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (current-time stacks-block-time)
+      (payout (if approved (get claim-amount claim) u0))
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (not (get processed claim)) ERR_CLAIM_ALREADY_PROCESSED)
+    (asserts! (>= current-time (+ (get claimed-at claim) (var-get claim-review-period))) ERR_INVALID_AMOUNT)
+
+    ;; If approved, transfer payout to vault owner
+    (if approved
+      (begin
+        (unwrap! (stx-transfer? payout (var-get contract-principal) (get owner vault)) ERR_INSUFFICIENT_BALANCE)
+
+        ;; Update policy
+        (map-set vault-insurance
+          { vault-id: vault-id }
+          (merge policy {
+            claims-count: (+ (get claims-count policy) u1),
+            total-claimed: (+ (get total-claimed policy) payout)
+          })
+        )
+
+        ;; Update fund balance
+        (var-set insurance-fund-balance (- (var-get insurance-fund-balance) payout))
+      )
+      true
+    )
+
+    ;; Update claim record
+    (map-set insurance-claims
+      { vault-id: vault-id, claim-id: claim-id }
+      (merge claim {
+        processed: true,
+        approved: approved,
+        payout-amount: payout,
+        processed-at: current-time
+      })
+    )
+
+    ;; Log activity
+    (try! (log-activity vault-id u14 payout (if approved "claim-approved" "claim-rejected") true))
+
+    (print {
+      event: "insurance-claim-processed",
+      vault-id: vault-id,
+      claim-id: claim-id,
+      approved: approved,
+      payout-amount: payout,
+      timestamp: current-time
+    })
+
+    (ok payout)
+  )
+)
+
+;; Renew insurance policy
+(define-public (renew-insurance (vault-id uint) (duration uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (policy (unwrap! (get-vault-insurance vault-id) ERR_NO_INSURANCE))
+      (premium (calculate-premium (get coverage-amount policy)))
+      (current-time stacks-block-time)
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (>= duration u2592000) ERR_INVALID_AMOUNT) ;; Min 30 days
+
+    ;; Transfer premium
+    (unwrap! (stx-transfer? premium tx-sender (var-get contract-principal)) ERR_INSUFFICIENT_BALANCE)
+
+    ;; Renew policy
+    (map-set vault-insurance
+      { vault-id: vault-id }
+      (merge policy {
+        active: true,
+        premium-paid: (+ (get premium-paid policy) premium),
+        expiry-time: (+ current-time duration)
+      })
+    )
+
+    ;; Update fund balance
+    (var-set insurance-fund-balance (+ (var-get insurance-fund-balance) premium))
+
+    (print {
+      event: "insurance-renewed",
+      vault-id: vault-id,
+      premium-paid: premium,
+      new-expiry: (+ current-time duration),
+      timestamp: current-time
+    })
+
+    (ok true)
+  )
+)
+
+;; Cancel insurance (partial refund)
+(define-public (cancel-insurance (vault-id uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (policy (unwrap! (get-vault-insurance vault-id) ERR_NO_INSURANCE))
+      (current-time stacks-block-time)
+      (time-remaining (if (> (get expiry-time policy) current-time)
+        (- (get expiry-time policy) current-time)
+        u0))
+      (total-duration (- (get expiry-time policy) (get start-time policy)))
+      (refund (/ (* (get premium-paid policy) time-remaining) total-duration))
+    )
+    ;; Validations
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (get active policy) ERR_NO_INSURANCE)
+    (asserts! (> refund u0) ERR_INVALID_AMOUNT)
+
+    ;; Transfer refund
+    (unwrap! (stx-transfer? refund (var-get contract-principal) tx-sender) ERR_INSUFFICIENT_BALANCE)
+
+    ;; Deactivate policy
+    (map-set vault-insurance
+      { vault-id: vault-id }
+      (merge policy { active: false })
+    )
+
+    ;; Update fund balance
+    (var-set insurance-fund-balance (- (var-get insurance-fund-balance) refund))
+
+    (print {
+      event: "insurance-cancelled",
+      vault-id: vault-id,
+      refund-amount: refund,
+      timestamp: current-time
+    })
+
+    (ok refund)
+  )
+)
+
+;; Admin: Set insurance parameters
+(define-public (set-insurance-params (premium-rate uint) (multiplier uint) (review-period uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (<= premium-rate u10000) ERR_INVALID_AMOUNT)
+    (asserts! (> multiplier u0) ERR_INVALID_AMOUNT)
+
+    (var-set base-premium-rate premium-rate)
+    (var-set coverage-multiplier multiplier)
+    (var-set claim-review-period review-period)
+
+    (print {
+      event: "insurance-params-updated",
+      premium-rate: premium-rate,
+      multiplier: multiplier,
+      review-period: review-period,
+      timestamp: stacks-block-time
     })
 
     (ok true)
