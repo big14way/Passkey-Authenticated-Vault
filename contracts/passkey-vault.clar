@@ -34,6 +34,12 @@
 (define-constant ERR_CLAIM_ALREADY_EXISTS (err u126))
 (define-constant ERR_CLAIM_NOT_FOUND (err u127))
 (define-constant ERR_CLAIM_ALREADY_PROCESSED (err u128))
+(define-constant ERR_DELEGATION_NOT_FOUND (err u129))
+(define-constant ERR_DELEGATION_EXISTS (err u130))
+(define-constant ERR_DELEGATION_EXPIRED (err u131))
+(define-constant ERR_INVALID_PERMISSION (err u132))
+(define-constant ERR_PERMISSION_DENIED (err u133))
+(define-constant ERR_INVALID_DELEGATION (err u134))
 
 ;; Minimum time-lock period (in seconds) - 1 hour
 (define-constant MIN_TIME_LOCK u3600)
@@ -216,6 +222,52 @@
   { vault-id: uint }
   { count: uint }
 )
+
+;; ========================================
+;; Vault Delegation System
+;; ========================================
+
+(define-data-var delegation-counter uint u0)
+
+;; Permission flags
+(define-constant PERM_DEPOSIT u1)
+(define-constant PERM_WITHDRAW u2)
+(define-constant PERM_VIEW u4)
+(define-constant PERM_MANAGE_CONTACTS u8)
+
+;; Vault delegations - grant specific permissions to other principals
+(define-map vault-delegations
+  { vault-id: uint, delegate: principal }
+  {
+    permissions: uint,        ;; Bitmap of permissions
+    granted-at: uint,
+    expires-at: uint,
+    max-daily-amount: uint,  ;; Maximum amount delegate can withdraw per day
+    daily-withdrawn: uint,
+    daily-reset-time: uint,
+    active: bool,
+    granted-by: principal
+  }
+)
+
+;; Track all delegates for a vault
+(define-map vault-delegates
+  { vault-id: uint }
+  (list 10 principal)
+)
+
+;; Delegation activity log
+(define-map delegation-activity
+  { vault-id: uint, delegate: principal, activity-id: uint }
+  {
+    action-type: (string-ascii 32),
+    amount: uint,
+    timestamp: uint,
+    success: bool
+  }
+)
+
+(define-data-var delegation-activity-counter uint u0)
 
 ;; Read-only functions
 
@@ -624,6 +676,58 @@
       claims-count: u0,
       total-claimed: u0
     })
+)
+
+;; ========================================
+;; Delegation Read-Only Functions
+;; ========================================
+
+;; Get delegation details
+(define-read-only (get-delegation (vault-id uint) (delegate principal))
+  (map-get? vault-delegations { vault-id: vault-id, delegate: delegate })
+)
+
+;; Get all delegates for a vault
+(define-read-only (get-vault-delegates (vault-id uint))
+  (default-to (list) (map-get? vault-delegates { vault-id: vault-id }))
+)
+
+;; Check if delegate has specific permission
+(define-read-only (has-permission (vault-id uint) (delegate principal) (permission uint))
+  (match (get-delegation vault-id delegate)
+    delegation (let
+      (
+        (perms (get permissions delegation))
+        (is-active (get active delegation))
+        (not-expired (>= (get expires-at delegation) stacks-block-time))
+      )
+      (and is-active not-expired (> (bit-and perms permission) u0))
+    )
+    false)
+)
+
+;; Get delegation activity
+(define-read-only (get-delegation-activity (vault-id uint) (delegate principal) (activity-id uint))
+  (map-get? delegation-activity { vault-id: vault-id, delegate: delegate, activity-id: activity-id })
+)
+
+;; Check remaining daily withdrawal limit for delegate
+(define-read-only (get-delegate-daily-remaining (vault-id uint) (delegate principal))
+  (match (get-delegation vault-id delegate)
+    delegation (let
+      (
+        (current-time stacks-block-time)
+        (reset-time (get daily-reset-time delegation))
+        (daily-withdrawn (if (>= current-time reset-time)
+          u0
+          (get daily-withdrawn delegation)))
+        (max-daily (get max-daily-amount delegation))
+      )
+      (if (>= max-daily daily-withdrawn)
+        (- max-daily daily-withdrawn)
+        u0)
+    )
+    u0)
 )
 
 ;; Public functions
@@ -1702,3 +1806,277 @@
     (ok true)
   )
 )
+
+;; ========================================
+;; Vault Delegation Public Functions
+;; ========================================
+
+;; Grant delegation permissions to another principal
+(define-public (grant-delegation 
+    (vault-id uint)
+    (delegate principal)
+    (permissions uint)
+    (duration-hours uint)
+    (max-daily-amount uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (existing-delegation (get-delegation vault-id delegate))
+      (current-time stacks-block-time)
+      (expiry-time (+ current-time (* duration-hours u3600)))
+      (delegates-list (get-vault-delegates vault-id))
+    )
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none existing-delegation) ERR_DELEGATION_EXISTS)
+    (asserts! (> permissions u0) ERR_INVALID_PERMISSION)
+    (asserts! (<= permissions u15) ERR_INVALID_PERMISSION) ;; Max all 4 permissions
+    (asserts! (> duration-hours u0) ERR_INVALID_DELEGATION)
+    (asserts! (<= duration-hours u8760) ERR_INVALID_DELEGATION) ;; Max 1 year
+    
+    ;; Create delegation
+    (map-set vault-delegations
+      { vault-id: vault-id, delegate: delegate }
+      {
+        permissions: permissions,
+        granted-at: current-time,
+        expires-at: expiry-time,
+        max-daily-amount: max-daily-amount,
+        daily-withdrawn: u0,
+        daily-reset-time: (+ current-time u86400),
+        active: true,
+        granted-by: tx-sender
+      }
+    )
+    
+    ;; Add to delegates list
+    (map-set vault-delegates
+      { vault-id: vault-id }
+      (unwrap! (as-max-len? (append delegates-list delegate) u10) ERR_INVALID_DELEGATION)
+    )
+    
+    (var-set delegation-counter (+ (var-get delegation-counter) u1))
+    
+    (print {
+      event: "delegation-granted",
+      vault-id: vault-id,
+      delegate: delegate,
+      permissions: permissions,
+      expires-at: expiry-time,
+      max-daily-amount: max-daily-amount,
+      granted-by: tx-sender,
+      timestamp: current-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Revoke delegation
+(define-public (revoke-delegation (vault-id uint) (delegate principal))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (delegation (unwrap! (get-delegation vault-id delegate) ERR_DELEGATION_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (get active delegation) ERR_DELEGATION_NOT_FOUND)
+    
+    ;; Deactivate delegation
+    (map-set vault-delegations
+      { vault-id: vault-id, delegate: delegate }
+      (merge delegation { active: false })
+    )
+    
+    (print {
+      event: "delegation-revoked",
+      vault-id: vault-id,
+      delegate: delegate,
+      revoked-by: tx-sender,
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Delegated deposit - allows delegate to deposit to vault
+(define-public (delegated-deposit (vault-id uint) (amount uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (delegate tx-sender)
+      (activity-id (var-get delegation-activity-counter))
+    )
+    (asserts! (has-permission vault-id delegate PERM_DEPOSIT) ERR_PERMISSION_DENIED)
+    (asserts! (> amount u0) ERR_ZERO_AMOUNT)
+    
+    ;; Transfer STX to contract
+    (unwrap! (stx-transfer? amount tx-sender (var-get contract-principal)) ERR_INSUFFICIENT_BALANCE)
+    
+    ;; Update vault balance
+    (map-set vaults
+      { vault-id: vault-id }
+      (merge vault {
+        stx-balance: (+ (get stx-balance vault) amount),
+        last-activity: stacks-block-time
+      })
+    )
+    
+    (var-set total-deposits (+ (var-get total-deposits) amount))
+    
+    ;; Log activity
+    (map-set delegation-activity
+      { vault-id: vault-id, delegate: delegate, activity-id: activity-id }
+      {
+        action-type: "deposit",
+        amount: amount,
+        timestamp: stacks-block-time,
+        success: true
+      }
+    )
+    
+    (var-set delegation-activity-counter (+ activity-id u1))
+    
+    (print {
+      event: "delegated-deposit",
+      vault-id: vault-id,
+      delegate: delegate,
+      amount: amount,
+      new-balance: (+ (get stx-balance vault) amount),
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Delegated withdrawal - allows delegate to withdraw with limits
+(define-public (delegated-withdraw (vault-id uint) (amount uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (delegate tx-sender)
+      (delegation (unwrap! (get-delegation vault-id delegate) ERR_DELEGATION_NOT_FOUND))
+      (current-time stacks-block-time)
+      (activity-id (var-get delegation-activity-counter))
+      (reset-time (get daily-reset-time delegation))
+      (current-daily-withdrawn (if (>= current-time reset-time) u0 (get daily-withdrawn delegation)))
+      (new-daily-withdrawn (+ current-daily-withdrawn amount))
+    )
+    (asserts! (has-permission vault-id delegate PERM_WITHDRAW) ERR_PERMISSION_DENIED)
+    (asserts! (> amount u0) ERR_ZERO_AMOUNT)
+    (asserts! (>= (get stx-balance vault) amount) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (<= new-daily-withdrawn (get max-daily-amount delegation)) ERR_SHARED_LIMIT_EXCEEDED)
+    (asserts! (< (get auto-locked-until vault) current-time) ERR_VAULT_LOCKED)
+    (asserts! (< (get time-lock-until vault) current-time) ERR_TIME_LOCK_ACTIVE)
+    
+    ;; Transfer STX to delegate
+    (unwrap! (stx-transfer? amount (var-get contract-principal) delegate) ERR_INSUFFICIENT_BALANCE)
+    
+    ;; Update vault
+    (map-set vaults
+      { vault-id: vault-id }
+      (merge vault {
+        stx-balance: (- (get stx-balance vault) amount),
+        last-activity: current-time
+      })
+    )
+    
+    ;; Update delegation daily limit
+    (map-set vault-delegations
+      { vault-id: vault-id, delegate: delegate }
+      (merge delegation {
+        daily-withdrawn: new-daily-withdrawn,
+        daily-reset-time: (if (>= current-time reset-time)
+          (+ current-time u86400)
+          reset-time)
+      })
+    )
+    
+    (var-set total-withdrawals (+ (var-get total-withdrawals) amount))
+    
+    ;; Log activity
+    (map-set delegation-activity
+      { vault-id: vault-id, delegate: delegate, activity-id: activity-id }
+      {
+        action-type: "withdrawal",
+        amount: amount,
+        timestamp: current-time,
+        success: true
+      }
+    )
+    
+    (var-set delegation-activity-counter (+ activity-id u1))
+    
+    (print {
+      event: "delegated-withdrawal",
+      vault-id: vault-id,
+      delegate: delegate,
+      amount: amount,
+      new-balance: (- (get stx-balance vault) amount),
+      daily-remaining: (- (get max-daily-amount delegation) new-daily-withdrawn),
+      timestamp: current-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Update delegation permissions (owner only)
+(define-public (update-delegation-permissions (vault-id uint) (delegate principal) (new-permissions uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (delegation (unwrap! (get-delegation vault-id delegate) ERR_DELEGATION_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (get active delegation) ERR_DELEGATION_NOT_FOUND)
+    (asserts! (> new-permissions u0) ERR_INVALID_PERMISSION)
+    (asserts! (<= new-permissions u15) ERR_INVALID_PERMISSION)
+    
+    (map-set vault-delegations
+      { vault-id: vault-id, delegate: delegate }
+      (merge delegation { permissions: new-permissions })
+    )
+    
+    (print {
+      event: "delegation-permissions-updated",
+      vault-id: vault-id,
+      delegate: delegate,
+      new-permissions: new-permissions,
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
+;; Extend delegation expiry (owner only)
+(define-public (extend-delegation (vault-id uint) (delegate principal) (additional-hours uint))
+  (let
+    (
+      (vault (unwrap! (get-vault vault-id) ERR_VAULT_NOT_FOUND))
+      (delegation (unwrap! (get-delegation vault-id delegate) ERR_DELEGATION_NOT_FOUND))
+      (new-expiry (+ (get expires-at delegation) (* additional-hours u3600)))
+    )
+    (asserts! (is-eq tx-sender (get owner vault)) ERR_NOT_AUTHORIZED)
+    (asserts! (get active delegation) ERR_DELEGATION_NOT_FOUND)
+    (asserts! (> additional-hours u0) ERR_INVALID_DELEGATION)
+    
+    (map-set vault-delegations
+      { vault-id: vault-id, delegate: delegate }
+      (merge delegation { expires-at: new-expiry })
+    )
+    
+    (print {
+      event: "delegation-extended",
+      vault-id: vault-id,
+      delegate: delegate,
+      new-expiry: new-expiry,
+      timestamp: stacks-block-time
+    })
+    
+    (ok true)
+  )
+)
+
