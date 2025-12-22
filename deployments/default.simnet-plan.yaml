@@ -44,4 +44,9 @@ plan:
             emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
             path: contracts/passkey-vault.clar
             clarity-version: 4
+        - emulated-contract-publish:
+            contract-name: vault-reputation
+            emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            path: contracts/vault-reputation.clar
+            clarity-version: 4
       epoch: "3.3"
