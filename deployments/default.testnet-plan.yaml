@@ -11,8 +11,15 @@ plan:
         - contract-publish:
             contract-name: passkey-vault
             expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
-            cost: 163880
+            cost: 25543002
             path: contracts/passkey-vault.clar
+            anchor-block-only: true
+            clarity-version: 4
+        - contract-publish:
+            contract-name: vault-reputation
+            expected-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+            cost: 24709177
+            path: contracts/vault-reputation.clar
             anchor-block-only: true
             clarity-version: 4
       epoch: "3.3"
