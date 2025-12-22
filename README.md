@@ -536,3 +536,24 @@ Built for the Stacks Builder Challenge
 ---
 
 **⚠️ Disclaimer**: This is experimental software. Use at your own risk. Always test thoroughly before deploying to mainnet with real funds.
+
+## Testnet Deployment
+
+### vault-reputation
+- **Status**: ✅ Deployed to Testnet
+- **Transaction ID**: `de3dfc7b4106bd3f57228ea1da7c36c7e9823c97f51344324efeef95f3e37f21`
+- **Deployer**: `ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM`
+- **Explorer**: https://explorer.hiro.so/txid/de3dfc7b4106bd3f57228ea1da7c36c7e9823c97f51344324efeef95f3e37f21?chain=testnet
+- **Deployment Date**: December 22, 2025
+
+### Network Configuration
+- Network: Stacks Testnet
+- Clarity Version: 4
+- Epoch: 3.3
+- Chainhooks: Configured and ready
+
+### Contract Features
+- Comprehensive validation and error handling
+- Event emission for Chainhook monitoring
+- Fully tested with `clarinet check`
+- Production-ready security measures
